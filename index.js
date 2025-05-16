@@ -8,7 +8,7 @@ require('dotenv').config();
 
 play.setToken({
   soundcloud: {
-    client_id: process.env.SOUNDCLOUD_CLIENT_ID || "X0XUYgYuJk5p3BEb5NCV8t3MiGpfbRhz"
+    client_id: process.env.SOUNDCLOUD_CLIENT_ID
   }
 });
 
