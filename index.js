@@ -3,7 +3,6 @@ const { joinVoiceChannel, createAudioPlayer, createAudioResource, AudioPlayerSta
 const play = require('play-dl');
 const { REST } = require('@discordjs/rest');
 const { Routes } = require('discord-api-types/v10');
-const axios = require('axios');
 require('dotenv').config();
 
 play.setToken({
@@ -63,7 +62,6 @@ client.once('ready', async () => {
       Routes.applicationCommands(client.user.id),
       { body: commands },
     );
-    console.log('Slash commands registered globally');
   } catch (error) {
     console.error('Error registering slash commands:', error);
   }
@@ -101,8 +99,7 @@ async function playSong(guild, song) {
       );
     
     if (song.thumbnailUrl) {
-      console.log(song)
-      embed.setImage(song.thumbnailUrl);
+      embed.setImage(song.thumbnailUrl.replace(/-large|-small|-badge|-tiny/g, '-t500x500'));
     }
     
     const row = new ActionRowBuilder()
@@ -143,28 +140,21 @@ function formatDuration(seconds) {
 }
 
 async function addSongToQueue(interaction, songInfo, voiceChannel) {
-  let embedInfo = {};
+  let thumbnailUrl = '';
   try {
-    const oEmbedResponse = await axios.get('https://soundcloud.com/oembed', {
-      params: {
-        format: 'json',
-        url: songInfo.url
-      }
-    });
-    embedInfo = oEmbedResponse.data;
+    const trackInfo = await play.soundcloud(songInfo.url);
+    thumbnailUrl = trackInfo.thumbnail || '';
   } catch (err) {
-    console.error('Error fetching oEmbed data:', err);
+    console.error('Error fetching track thumbnail:', err);
   }
 
   const song = {
     title: songInfo.name || songInfo.title,
     url: songInfo.url,
-    permalinkUrl: embedInfo.url || songInfo.permalink || songInfo.url,
+    permalinkUrl: songInfo.permalink_url || songInfo.url,
     duration: songInfo.durationInSec,
-    thumbnailUrl: embedInfo.thumbnail_url || '',
-    waveformUrl: songInfo.waveform_url || '',
-    author: embedInfo.author_name || songInfo.user?.name || 'Unknown artist',
-    embedHtml: embedInfo.html || ''
+    thumbnailUrl: thumbnailUrl,
+    author: songInfo.user?.name || 'Unknown artist',
   };
   
   const serverQueue = queue.get(interaction.guild.id);
