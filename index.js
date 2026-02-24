@@ -101,6 +101,7 @@ async function playSong(guild, song) {
       );
     
     if (song.thumbnailUrl) {
+      console.log(song.thumbnailUrl)
       embed.setImage(song.thumbnailUrl);
     }
     
