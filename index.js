@@ -68,6 +68,7 @@ client.once('ready', async () => {
 });
 
 async function playSong(guild, song) {
+  console.log(song);
   const serverQueue = queue.get(guild.id);
   
   if (!song) {
