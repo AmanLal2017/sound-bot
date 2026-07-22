@@ -102,6 +102,7 @@ async function ensureVoiceChannel(interaction, actionText) {
 }
 
 distube.on('playSong', (queue, song) => {
+  console.log('STREAM URL:', song.streamURL || song.url);
   const embed = new EmbedBuilder()
     .setTitle('SoundCloud')
     .setColor('#FF7700')
@@ -142,8 +143,8 @@ distube.on('finish', queue => {
 
 distube.on('disconnect', queue => {});
 
-distube.on('debug', message => console.log('[distube debug]', message));
-distube.on('ffmpegDebug', message => console.log('[ffmpeg debug]', message));
+// distube.on('debug', message => console.log('[distube debug]', message));
+// distube.on('ffmpegDebug', message => console.log('[ffmpeg debug]', message));
 
 client.on('interactionCreate', async interaction => {
  try {
