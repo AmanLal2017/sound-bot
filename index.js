@@ -1,15 +1,19 @@
-const { Client, GatewayIntentBits, EmbedBuilder, SlashCommandBuilder, ActionRowBuilder, ButtonBuilder, ButtonStyle, StringSelectMenuBuilder, PermissionsBitField, ApplicationCommandOptionType } = require('discord.js');
-const { joinVoiceChannel, createAudioPlayer, createAudioResource, AudioPlayerStatus } = require('@discordjs/voice');
-const play = require('play-dl');
+const {
+  Client,
+  GatewayIntentBits,
+  EmbedBuilder,
+  SlashCommandBuilder,
+  ActionRowBuilder,
+  ButtonBuilder,
+  ButtonStyle,
+  PermissionsBitField,
+} = require('discord.js');
+const { DisTube } = require('distube');
+const { SoundCloudPlugin } = require('@distube/soundcloud');
 const { REST } = require('@discordjs/rest');
 const { Routes } = require('discord-api-types/v10');
+const ffmpegPath = require('ffmpeg-static');
 require('dotenv').config();
-
-play.setToken({
-  soundcloud: {
-    client_id: process.env.SOUNDCLOUD_CLIENT_ID
-  }
-});
 
 const client = new Client({
   intents: [
@@ -20,14 +24,32 @@ const client = new Client({
   ],
 });
 
-const queue = new Map();
+const distube = new DisTube(client, {
+  plugins: [
+    new SoundCloudPlugin({
+      clientId: process.env.SOUNDCLOUD_CLIENT_ID,
+    }),
+  ],
+  emitNewSongOnly: true,
+  ffmpeg: {
+    path: ffmpegPath,
+    args: {
+      input: {
+        protocol_whitelist: 'file,http,https,tcp,tls,crypto',
+      },
+    },
+  },
+});
+
 const searchResults = new Map();
+const lastAutocompleteRequest = new Map();
+const respondedInteractions = new Set();
 
 const commands = [
   new SlashCommandBuilder()
     .setName('play')
     .setDescription('Play a song from SoundCloud')
-    .addStringOption(option => 
+    .addStringOption(option =>
       option.setName('query')
         .setDescription('The song name or URL')
         .setRequired(true)
@@ -52,11 +74,9 @@ const commands = [
     .setDescription('Disconnect bot from voice channel'),
 ].map(command => command.toJSON());
 
-client.once('ready', async () => {
-  console.log(`Bot is online as ${client.user.tag}`);
-  
+client.once('clientReady', async () => {
   const rest = new REST({ version: '10' }).setToken(process.env.DISCORD_TOKEN);
-  
+
   try {
     await rest.put(
       Routes.applicationCommands(client.user.id),
@@ -67,377 +87,276 @@ client.once('ready', async () => {
   }
 });
 
-async function playSong(guild, song) {
-  console.log(song);
-  const serverQueue = queue.get(guild.id);
-  
-  if (!song) {
-    serverQueue.connection.destroy();
-    queue.delete(guild.id);
-    return;
-  }
-  
-  try {
-    const source = await play.stream(song.url);
-    
-    const resource = createAudioResource(source.stream, {
-      inputType: source.type,
-    });
-    
-    const player = createAudioPlayer();
-    serverQueue.connection.subscribe(player);
-    
-    player.play(resource);
-    serverQueue.player = player;
-    
-    const embed = new EmbedBuilder()
-      .setTitle('Soundcloud')
-      .setColor('#FF7700')
-      .addFields(
-        { name: 'Artist', value: song.author, inline: true },
-        { name: '🎵 Now Playing', value: `[${song.title}](${song.url})`, inline: true },
-        { name: 'Duration', value: formatDuration(song.duration), inline: true }
-      );
-    
-    if (song.thumbnailUrl) {
-      embed.setImage(song.thumbnailUrl.replace(/-large|-small|-badge|-tiny/g, '-t500x500'));
-    }
-    
-    const row = new ActionRowBuilder()
-      .addComponents(
-        new ButtonBuilder()
-          .setLabel('Open in SoundCloud')
-          .setURL(song.permalinkUrl)
-          .setStyle(ButtonStyle.Link)
-      );
-    
-    await serverQueue.textChannel.send({ 
-      embeds: [embed],
-      components: [row]
-    });
-    
-    player.on(AudioPlayerStatus.Idle, () => {
-      serverQueue.songs.shift();
-      playSong(guild, serverQueue.songs[0]);
-    });
-    
-    player.on('error', error => {
-      console.error(`Error: ${error.message}`);
-      serverQueue.songs.shift();
-      playSong(guild, serverQueue.songs[0]);
-    });
-    
-  } catch (error) {
-    console.error(`Error playing song: ${error.message}`);
-    serverQueue.songs.shift();
-    playSong(guild, serverQueue.songs[0]);
-  }
-}
-
 function formatDuration(seconds) {
   const minutes = Math.floor(seconds / 60);
   const remainingSeconds = Math.floor(seconds % 60);
   return `${minutes}:${remainingSeconds.toString().padStart(2, '0')}`;
 }
 
-async function addSongToQueue(interaction, songInfo, voiceChannel) {
-  let thumbnailUrl = '';
-  try {
-    const trackInfo = await play.soundcloud(songInfo.url);
-    thumbnailUrl = trackInfo.thumbnail || '';
-  } catch (err) {
-    console.error('Error fetching track thumbnail:', err);
+async function ensureVoiceChannel(interaction, actionText) {
+  if (!interaction.member.voice.channel) {
+    await interaction.reply(`You need to be in a voice channel to ${actionText}!`);
+    return false;
   }
-
-  const song = {
-    title: songInfo.name || songInfo.title,
-    url: songInfo.url,
-    permalinkUrl: songInfo.permalink_url || songInfo.url,
-    duration: songInfo.durationInSec,
-    thumbnailUrl: thumbnailUrl,
-    author: songInfo.user?.name || 'Unknown artist',
-  };
-  
-  const serverQueue = queue.get(interaction.guild.id);
-
-  if (!serverQueue) {
-    const queueConstruct = {
-      textChannel: interaction.channel,
-      voiceChannel: voiceChannel,
-      connection: null,
-      songs: [],
-      player: null,
-      volume: 5,
-      playing: true
-    };
-    
-    queue.set(interaction.guild.id, queueConstruct);
-    queueConstruct.songs.push(song);
-    
-    try {
-      const connection = joinVoiceChannel({
-        channelId: voiceChannel.id,
-        guildId: interaction.guild.id,
-        adapterCreator: interaction.guild.voiceAdapterCreator,
-      });
-      
-      queueConstruct.connection = connection;
-      await interaction.editReply(`Added **${song.title}** to the queue!`);
-      playSong(interaction.guild, queueConstruct.songs[0]);
-    } catch (err) {
-      console.error(err);
-      queue.delete(interaction.guild.id);
-      return interaction.editReply('Error joining voice channel!');
-    }
-  } else {
-    serverQueue.songs.push(song);
-    return interaction.editReply(`Added **${song.title}** to the queue!`);
-  }
+  return true;
 }
 
+distube.on('playSong', (queue, song) => {
+  const embed = new EmbedBuilder()
+    .setTitle('SoundCloud')
+    .setColor('#FF7700')
+    .addFields(
+      { name: 'Artist', value: song.uploader?.name || 'Unknown artist', inline: true },
+      { name: '🎵 Now Playing', value: `[${song.name}](${song.url})`, inline: true },
+      { name: 'Duration', value: song.formattedDuration || formatDuration(song.duration), inline: true },
+    );
+
+  if (song.thumbnail) {
+    embed.setImage(song.thumbnail.replace(/-large|-small|-badge|-tiny/g, '-t500x500'));
+  }
+
+  const row = new ActionRowBuilder().addComponents(
+    new ButtonBuilder()
+      .setLabel('Open in SoundCloud')
+      .setURL(song.url)
+      .setStyle(ButtonStyle.Link),
+  );
+
+  queue.textChannel?.send({ embeds: [embed], components: [row] });
+});
+
+distube.on('addSong', (queue, song) => {
+  if (queue.songs.length > 1) {
+    queue.textChannel?.send(`Added **${song.name}** to the queue!`);
+  }
+});
+
+distube.on('error', (channel, error) => {
+  console.error('DisTube error:', error);
+  channel?.send?.('An error occurred while trying to play that.').catch(() => {});
+});
+
+distube.on('finish', queue => {
+  queue.textChannel?.send('Queue finished, leaving the voice channel.').catch(() => {});
+});
+
+distube.on('disconnect', queue => {});
+
+distube.on('debug', message => console.log('[distube debug]', message));
+distube.on('ffmpegDebug', message => console.log('[ffmpeg debug]', message));
+
 client.on('interactionCreate', async interaction => {
+ try {
   if (interaction.isAutocomplete()) {
     if (interaction.commandName === 'play') {
       const focusedValue = interaction.options.getFocused();
-      
+
+      const userKey = `${interaction.guild.id}_${interaction.user.id}`;
+      const requestId = Symbol();
+      lastAutocompleteRequest.set(userKey, requestId);
+
+      const safeRespond = async choices => {
+        if (lastAutocompleteRequest.get(userKey) !== requestId) return;
+        if (respondedInteractions.has(interaction.id)) return;
+        respondedInteractions.add(interaction.id);
+        setTimeout(() => respondedInteractions.delete(interaction.id), 10_000);
+        try {
+          await interaction.respond(choices);
+        } catch (err) {
+          if (err.code !== 10062 && err.code !== 40060) console.error('Autocomplete respond error:', err);
+        }
+      };
+
       if (focusedValue.length < 2) {
-        await interaction.respond([
-          { name: 'Type at least 2 characters to search...', value: 'placeholder' }
+        await safeRespond([
+          { name: 'Type at least 2 characters to search...', value: 'placeholder' },
         ]);
         return;
       }
-      
+
+      if (focusedValue.includes('soundcloud.com')) {
+        await safeRespond([
+          { name: `Play SoundCloud URL: ${focusedValue}`, value: focusedValue },
+        ]);
+        return;
+      }
+
       try {
-        if (focusedValue.includes('soundcloud.com')) {
-          await interaction.respond([
-            { name: `Play SoundCloud URL: ${focusedValue}`, value: focusedValue }
-          ]);
+        const scPlugin = distube.plugins.find(p => p.constructor.name === 'SoundCloudPlugin');
+
+        const results = await Promise.race([
+          scPlugin.search(focusedValue, 'track', 15),
+          new Promise((_, reject) => setTimeout(() => reject(new Error('search_timeout')), 2200)),
+        ]);
+
+        if (lastAutocompleteRequest.get(userKey) !== requestId) return;
+
+        if (!results || results.length === 0) {
+          await safeRespond([{ name: 'No results found', value: 'no_results' }]);
           return;
         }
-        
-        const results = await play.search(focusedValue, { 
-          source: { soundcloud: "tracks" }, 
-          limit: 15 
-        });
-        
-        if (results.length === 0) {
-          await interaction.respond([
-            { name: 'No results found', value: 'no_results' }
-          ]);
-          return;
-        }
-        
+
         const options = results.map((track, index) => {
-          const artist = track.user?.name || 'Unknown artist';
-          const duration = formatDuration(track.durationInSec);
-          const name = `${track.name || track.title} - ${artist} - ${duration}`;
-          
+          const artist = track.uploader?.name || 'Unknown artist';
+          const duration = formatDuration(track.duration);
+          const name = `${track.name} - ${artist} - ${duration}`;
+
           return {
             name: name.length > 100 ? name.substring(0, 97) + '...' : name,
-            value: `result_${index}`
+            value: `result_${index}`,
           };
         });
-        
-        const userKey = `${interaction.guild.id}_${interaction.user.id}`;
-        searchResults.set(userKey, {
-          tracks: results,
-          query: focusedValue
-        });
-        
-        await interaction.respond(options);
+
+        searchResults.set(userKey, { tracks: results, query: focusedValue });
+
+        await safeRespond(options);
       } catch (error) {
         console.error(`Error in autocomplete: ${error.message}`);
-        await interaction.respond([
-          { name: 'Error searching SoundCloud', value: 'error' }
-        ]);
+        await safeRespond([{ name: 'Error searching SoundCloud', value: 'error' }]);
       }
     }
+    return;
   }
-  
-  else if (interaction.isCommand()) {
-    const { commandName } = interaction;
-    const serverQueue = queue.get(interaction.guild.id);
-    
-    if (commandName === 'play') {
-      const query = interaction.options.getString('query');
-      const voiceChannel = interaction.member.voice.channel;
-      
-      if (!voiceChannel) {
-        return interaction.reply('You need to be in a voice channel to play music!');
-      }
-      
-      const permissions = voiceChannel.permissionsFor(interaction.client.user);
-      if (!permissions.has(PermissionsBitField.Flags.Connect) || !permissions.has(PermissionsBitField.Flags.Speak)) {
-        return interaction.reply('I need permissions to join and speak in your voice channel!');
-      }
-      
-      try {
-        await interaction.deferReply();
-        
-        if (query.includes('soundcloud.com')) {
-          const songInfo = await play.soundcloud(query);
-          await addSongToQueue(interaction, songInfo, voiceChannel);
-        } 
 
-        else if (query.startsWith('result_')) {
-          const userKey = `${interaction.guild.id}_${interaction.user.id}`;
-          const searchData = searchResults.get(userKey);
-          
-          if (!searchData) {
-            return interaction.editReply('Search results expired. Please try again.');
-          }
-          
-          const trackIndex = parseInt(query.replace('result_', ''));
-          const selectedTrack = searchData.tracks[trackIndex];
-          
-          if (!selectedTrack) {
-            return interaction.editReply('Selected track not found. Please try again.');
-          }
-          
-          await addSongToQueue(interaction, selectedTrack, voiceChannel);
-          searchResults.delete(userKey);
-        }
+  if (!interaction.isChatInputCommand()) return;
 
-        else {
-          const searchedTracks = await play.search(query, { 
-            source: { soundcloud: "tracks" }, 
-            limit: 1
-          });
-          
-          if (searchedTracks.length === 0) {
-            return interaction.editReply('No songs found!');
-          }
-          
-          await addSongToQueue(interaction, searchedTracks[0], voiceChannel);
-        }
-      } catch (error) {
-        console.error(`Error in play command: ${error.message}`);
-        return interaction.editReply('An error occurred while trying to play the song.');
-      }
+  const { commandName } = interaction;
+  const queue = distube.getQueue(interaction.guildId);
+
+  if (commandName === 'play') {
+    const query = interaction.options.getString('query');
+
+    try {
+      await interaction.deferReply();
+    } catch (err) {
+      if (err.code === 10062) return;
+      console.error('Unexpected error deferring reply:', err);
+      return;
     }
-    
-    else if (commandName === 'skip') {
-      if (!serverQueue) {
-        return interaction.reply('There is no song to skip!');
+
+    const voiceChannel = interaction.member.voice.channel;
+
+    if (!voiceChannel) {
+      return interaction.editReply('You need to be in a voice channel to play music!');
+    }
+
+    const permissions = voiceChannel.permissionsFor(interaction.client.user);
+    if (!permissions.has(PermissionsBitField.Flags.Connect) || !permissions.has(PermissionsBitField.Flags.Speak)) {
+      return interaction.editReply('I need permissions to join and speak in your voice channel!');
+    }
+
+    try {
+      let playQuery = query;
+
+      if (query.startsWith('result_')) {
+        const userKey = `${interaction.guild.id}_${interaction.user.id}`;
+        const searchData = searchResults.get(userKey);
+
+        if (!searchData) {
+          return interaction.editReply('Search results expired. Please try again.');
+        }
+
+        const trackIndex = parseInt(query.replace('result_', ''), 10);
+        const selectedTrack = searchData.tracks[trackIndex];
+
+        if (!selectedTrack) {
+          return interaction.editReply('Selected track not found. Please try again.');
+        }
+
+        playQuery = selectedTrack;
+        searchResults.delete(userKey);
       }
-      
-      if (!interaction.member.voice.channel) {
-        return interaction.reply('You need to be in a voice channel to skip songs!');
+
+      await Promise.race([
+        distube.play(voiceChannel, playQuery, {
+          textChannel: interaction.channel,
+          member: interaction.member,
+        }),
+        new Promise((_, reject) => setTimeout(() => reject(new Error('play_timeout')), 35_000)),
+      ]);
+
+      await interaction.editReply('Got it! 🎶');
+    } catch (error) {
+      console.error(`Error in play command: ${error.message}`);
+      if (error.message === 'play_timeout') {
+        return interaction.editReply('SoundCloud took too long to respond — it may be having issues right now. Try again in a moment.');
       }
-      
-      serverQueue.player.stop();
+      return interaction.editReply('An error occurred while trying to play the song.');
+    }
+    return;
+  }
+
+  if (commandName === 'skip') {
+    if (!queue) return interaction.reply('There is no song to skip!');
+    if (!(await ensureVoiceChannel(interaction, 'skip songs'))) return;
+
+    try {
+      await queue.skip();
       return interaction.reply('⏭️ Skipped the song!');
-    }
-    
-    else if (commandName === 'stop') {
-      if (!serverQueue) {
-        return interaction.reply('There is nothing playing!');
-      }
-      
-      if (!interaction.member.voice.channel) {
-        return interaction.reply('You need to be in a voice channel to stop the music!');
-      }
-      
-      serverQueue.songs = [];
-      serverQueue.player.stop();
-      return interaction.reply('🛑 Stopped the music and cleared the queue!');
-    }
-    
-    else if (commandName === 'queue') {
-      if (!serverQueue || serverQueue.songs.length === 0) {
-        return interaction.reply('There are no songs in the queue!');
-      }
-      
-      const embed = new EmbedBuilder()
-        .setTitle('🎵 Song Queue')
-        .setColor('#FF7700')
-        .setTimestamp();
-      
-      const songList = serverQueue.songs.map((song, index) => {
-        return `${index + 1}. [${song.title}](${song.url})`;
-      }).join('\n');
-      
-      embed.setDescription(songList.length > 2048 ? songList.substring(0, 2045) + '...' : songList);
-      
-      return interaction.reply({ embeds: [embed] });
-    }
-    
-    else if (commandName === 'pause') {
-      if (!serverQueue || !serverQueue.playing) {
-        return interaction.reply('There is nothing playing!');
-      }
-      
-      if (!interaction.member.voice.channel) {
-        return interaction.reply('You need to be in a voice channel to pause the music!');
-      }
-      
-      serverQueue.player.pause();
-      serverQueue.playing = false;
-      return interaction.reply('⏸️ Paused the music!');
-    }
-    
-    else if (commandName === 'resume') {
-      if (!serverQueue || serverQueue.playing) {
-        return interaction.reply('The music is already playing!');
-      }
-      
-      if (!interaction.member.voice.channel) {
-        return interaction.reply('You need to be in a voice channel to resume the music!');
-      }
-      
-      serverQueue.player.unpause();
-      serverQueue.playing = true;
-      return interaction.reply('▶️ Resumed the music!');
-    }
-    
-    else if (commandName === 'leave') {
-      if (!serverQueue) {
-        return interaction.reply('I am not in a voice channel!');
-      }
-      
-      if (!interaction.member.voice.channel) {
-        return interaction.reply('You need to be in a voice channel to disconnect the bot!');
-      }
-      
-      serverQueue.songs = [];
-      serverQueue.connection.destroy();
-      queue.delete(interaction.guild.id);
-      return interaction.reply('👋 Disconnected from the voice channel!');
+    } catch (err) {
+      return interaction.reply('There is nothing left to skip to.');
     }
   }
-  
-  else if (interaction.isStringSelectMenu()) {
-    if (interaction.customId === 'select_track') {
-      const selectedValue = interaction.values[0];
-      const guildSearchResults = searchResults.get(interaction.guild.id);
-      
-      if (!guildSearchResults) {
-        return interaction.reply({ 
-          content: 'Search results expired. Please run the search again.',
-          ephemeral: true 
-        });
-      }
-      
-      const selectedTrack = guildSearchResults.tracks[parseInt(selectedValue)];
-      const voiceChannel = guildSearchResults.voiceChannel;
-      const originalInteraction = guildSearchResults.interaction;
-      
-      await originalInteraction.editReply({
-        content: `Selected: **${selectedTrack.name || selectedTrack.title}**`,
-        embeds: [],
-        components: []
-      });
-      
-      await interaction.deferReply({ ephemeral: true });
-      try {
-        await addSongToQueue(interaction, selectedTrack, voiceChannel);
-        searchResults.delete(interaction.guild.id);
-      } catch (error) {
-        console.error(`Error playing selected track: ${error.message}`);
-        await interaction.editReply('An error occurred while trying to play the selected track.');
-      }
-    }
+
+  if (commandName === 'stop') {
+    if (!queue) return interaction.reply('There is nothing playing!');
+    if (!(await ensureVoiceChannel(interaction, 'stop the music'))) return;
+
+    queue.stop();
+    return interaction.reply('🛑 Stopped the music and cleared the queue!');
   }
+
+  if (commandName === 'queue') {
+    if (!queue || queue.songs.length === 0) return interaction.reply('There are no songs in the queue!');
+
+    const embed = new EmbedBuilder().setTitle('🎵 Song Queue').setColor('#FF7700').setTimestamp();
+
+    const songList = queue.songs
+      .map((song, index) => `${index + 1}. [${song.name}](${song.url})`)
+      .join('\n');
+
+    embed.setDescription(songList.length > 2048 ? songList.substring(0, 2045) + '...' : songList);
+
+    return interaction.reply({ embeds: [embed] });
+  }
+
+  if (commandName === 'pause') {
+    if (!queue || queue.paused) return interaction.reply('There is nothing playing!');
+    if (!(await ensureVoiceChannel(interaction, 'pause the music'))) return;
+
+    queue.pause();
+    return interaction.reply('⏸️ Paused the music!');
+  }
+
+  if (commandName === 'resume') {
+    if (!queue || !queue.paused) return interaction.reply('The music is already playing!');
+    if (!(await ensureVoiceChannel(interaction, 'resume the music'))) return;
+
+    queue.resume();
+    return interaction.reply('▶️ Resumed the music!');
+  }
+
+  if (commandName === 'leave') {
+    if (!queue) return interaction.reply('I am not in a voice channel!');
+    if (!(await ensureVoiceChannel(interaction, 'disconnect the bot'))) return;
+
+    queue.stop();
+    return interaction.reply('👋 Disconnected from the voice channel!');
+  }
+ } catch (err) {
+  if (err.code === 10062 || err.code === 40060) {
+  } else {
+    console.error('Unhandled error in interactionCreate:', err);
+  }
+ }
+});
+
+client.on('error', err => {
+  console.error('Discord client error:', err);
+});
+
+process.on('unhandledRejection', err => {
+  console.error('Unhandled promise rejection:', err);
 });
 
 client.login(process.env.DISCORD_TOKEN);
