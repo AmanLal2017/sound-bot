@@ -14,12 +14,14 @@
   "license": "ISC",
   "description": "",
   "dependencies": {
+    "@discordjs/opus": "^0.10.0",
     "@discordjs/rest": "^2.4.3",
     "@discordjs/voice": "^0.18.0",
     "@distube/soundcloud": "^2.0.4",
     "discord-api-types": "^0.37.42",
     "discord.js": "^14.18.0",
-    "play-dl": "1.9.5",
-    "dotenv": "^16.4.7"
+    "distube": "^5.1.2",
+    "dotenv": "^16.4.7",
+    "sodium-native": "^5.1.0"
   }
 }
