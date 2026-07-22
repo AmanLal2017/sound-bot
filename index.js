@@ -31,7 +31,7 @@ const distube = new DisTube(client, {
   ],
   emitNewSongOnly: true,
   ffmpeg: {
-    path: ffmpeg,
+    path: 'ffmpeg',
     args: {
       input: {
         protocol_whitelist: 'file,http,https,tcp,tls,crypto',
