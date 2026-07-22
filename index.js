@@ -75,6 +75,7 @@ const commands = [
 ].map(command => command.toJSON());
 
 client.once('clientReady', async () => {
+  console.log("Soundcloud Bot is now online.");
   const rest = new REST({ version: '10' }).setToken(process.env.DISCORD_TOKEN);
 
   try {
@@ -141,9 +142,6 @@ distube.on('finish', queue => {
 });
 
 distube.on('disconnect', queue => {});
-
-distube.on('debug', message => console.log('[distube debug]', message));
-distube.on('ffmpegDebug', message => console.log('[ffmpeg debug]', message));
 
 client.on('interactionCreate', async interaction => {
  try {
