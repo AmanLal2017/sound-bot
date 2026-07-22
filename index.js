@@ -33,6 +33,11 @@ const distube = new DisTube(client, {
   emitNewSongOnly: true,
   ffmpeg: {
     path: ffmpegPath,
+    args: {
+      input: {
+        protocol_whitelist: 'file,http,https,tcp,tls,crypto',
+      },
+    },
   },
 });
 
@@ -69,7 +74,7 @@ const commands = [
     .setDescription('Disconnect bot from voice channel'),
 ].map(command => command.toJSON());
 
-client.once('ready', async () => {
+client.once('clientReady', async () => {
   const rest = new REST({ version: '10' }).setToken(process.env.DISCORD_TOKEN);
 
   try {
