@@ -12,7 +12,6 @@ const { DisTube } = require('distube');
 const { SoundCloudPlugin } = require('@distube/soundcloud');
 const { REST } = require('@discordjs/rest');
 const { Routes } = require('discord-api-types/v10');
-const ffmpegPath = require('ffmpeg-static');
 require('dotenv').config();
 
 const client = new Client({
@@ -32,7 +31,7 @@ const distube = new DisTube(client, {
   ],
   emitNewSongOnly: true,
   ffmpeg: {
-    path: ffmpegPath,
+    path: ffmpeg,
     args: {
       input: {
         protocol_whitelist: 'file,http,https,tcp,tls,crypto',
@@ -142,6 +141,9 @@ distube.on('finish', queue => {
 });
 
 distube.on('disconnect', queue => {});
+
+distube.on('debug', message => console.log('[distube debug]', message));
+distube.on('ffmpegDebug', message => console.log('[ffmpeg debug]', message));
 
 client.on('interactionCreate', async interaction => {
  try {
