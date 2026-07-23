@@ -11,6 +11,7 @@ const {
 const { DisTube } = require('distube');
 const { SoundCloudPlugin } = require('@distube/soundcloud');
 const { REST } = require('@discordjs/rest');
+const { getVoiceConnection } = require('@discordjs/voice');
 const { Routes } = require('discord-api-types/v10');
 require('dotenv').config();
 
@@ -131,13 +132,55 @@ distube.on('addSong', (queue, song) => {
   }
 });
 
-distube.on('error', (channel, error) => {
-  console.error('DisTube error:', error);
-  channel?.send?.('An error occurred while trying to play that.').catch(() => {});
+const pendingRecovery = new Map();
+
+distube.on('error', (...args) => {
+  const error = args.find(a => a instanceof Error);
+  const queue = args.find(a => a && typeof a === 'object' && Array.isArray(a.songs) && a.textChannel !== undefined);
+  const song = args.find(a => a && typeof a === 'object' && typeof a.name === 'string' && typeof a.url === 'string' && !Array.isArray(a.songs));
+
+  console.error('DisTube error:', error?.message || error, song ? `| Song: ${song.name}` : '');
+
+  const channel = queue?.textChannel;
+  if (channel) {
+    const songName = song?.name ? `**${song.name}**` : 'This track';
+    channel.send(`⚠️ ${songName} could not be played (likely a corrupted or encrypted stream) and was skipped.`).catch(() => {});
+  }
+
+  if (queue) {
+    const remaining = queue.songs.filter(s => s !== song);
+    if (remaining.length > 0 && queue.voice?.channel) {
+      pendingRecovery.set(queue.id, {
+        songs: remaining,
+        voiceChannel: queue.voice.channel,
+        textChannel: queue.textChannel,
+      });
+    }
+  }
 });
 
 distube.on('finish', queue => {
+  const recovery = pendingRecovery.get(queue.id);
+  pendingRecovery.delete(queue.id);
+
+  if (recovery) {
+    try { queue.voice?.leave(); } catch (_) {}
+
+    setTimeout(async () => {
+      try {
+        for (const s of recovery.songs) {
+          await distube.play(recovery.voiceChannel, s, { textChannel: recovery.textChannel });
+        }
+      } catch (err) {
+        console.error('Failed to resume queue after error recovery:', err);
+      }
+    }, 1500);
+
+    return;
+  }
+
   queue.textChannel?.send('Queue finished, leaving the voice channel.').catch(() => {});
+  try { queue.voice?.leave(); } catch (_) {}
 });
 
 distube.on('disconnect', queue => {});
@@ -305,6 +348,7 @@ client.on('interactionCreate', async interaction => {
     if (!queue) return interaction.reply('There is nothing playing!');
     if (!(await ensureVoiceChannel(interaction, 'stop the music'))) return;
 
+    try { queue.voice?.leave(); } catch (_) {}
     queue.stop();
     return interaction.reply('🛑 Stopped the music and cleared the queue!');
   }
@@ -340,10 +384,20 @@ client.on('interactionCreate', async interaction => {
   }
 
   if (commandName === 'leave') {
-    if (!queue) return interaction.reply('I am not in a voice channel!');
+    const connection = getVoiceConnection(interaction.guildId);
+
+    if (!connection && !queue) {
+      return interaction.reply('I am not in a voice channel!');
+    }
     if (!(await ensureVoiceChannel(interaction, 'disconnect the bot'))) return;
 
-    queue.stop();
+    if (queue) {
+      try { queue.voice?.leave(); } catch (_) {}
+      queue.stop();
+    } else if (connection) {
+      connection.destroy();
+    }
+
     return interaction.reply('👋 Disconnected from the voice channel!');
   }
  } catch (err) {
