@@ -281,6 +281,9 @@ client.on('interactionCreate', async interaction => {
       if (error.message === 'play_timeout') {
         return interaction.editReply('SoundCloud took too long to respond — it may be having issues right now. Try again in a moment.');
       }
+      if (error.message && error.message.toLowerCase().includes('cannot find any song with this query')) {
+        return interaction.editReply(`❌ No results found for **${query}**. Try a different search term or paste a direct SoundCloud URL.`);
+      }
       return interaction.editReply('An error occurred while trying to play the song.');
     }
     return;
