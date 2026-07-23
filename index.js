@@ -102,7 +102,6 @@ async function ensureVoiceChannel(interaction, actionText) {
 }
 
 distube.on('playSong', (queue, song) => {
-  console.log('STREAM URL:', song.streamURL || song.url);
   const embed = new EmbedBuilder()
     .setTitle('SoundCloud')
     .setColor('#FF7700')
