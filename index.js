@@ -44,6 +44,7 @@ const distube = new DisTube(client, {
 const searchResults = new Map();
 const lastAutocompleteRequest = new Map();
 const respondedInteractions = new Set();
+const recentlyAnnounced = new Map();
 
 const commands = [
   new SlashCommandBuilder()
@@ -103,6 +104,14 @@ async function ensureVoiceChannel(interaction, actionText) {
 }
 
 distube.on('playSong', (queue, song) => {
+  const last = recentlyAnnounced.get(queue.id);
+  const now = Date.now();
+
+  if (last && last.url === song.url && now - last.timestamp < 5000) {
+    return;
+  }
+  recentlyAnnounced.set(queue.id, { url: song.url, timestamp: now });
+  
   const embed = new EmbedBuilder()
     .setTitle('SoundCloud')
     .setColor('#FF7700')
